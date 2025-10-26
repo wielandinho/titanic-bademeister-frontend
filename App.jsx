@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import './styles.css';
 
 // ❗ DEINE Backend-URL (Apps Script Web-App URL) – exakt so eintragen:
-const API = 'https://script.google.com/macros/s/AKfycbwE39OZOCQMP6lElTFmdBUuIbNb3qtAdXBnEMLu6TFps7yJms1RKmWRbKip0JgbndOr/exec';
+const API = 'https://script.google.com/macros/s/AKfycbwNztV3o25lGbDdCX8ziUI6ruJPuY6XcPcfJPHV3qiKMGyjf5q4RkGlOzbxt4xsYGQD/exec';
 
 // Standard-Passwort für Auto-Login
 const DEFAULT_PW = 'Sieger';
