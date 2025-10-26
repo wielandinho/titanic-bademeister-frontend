@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 
 // ✅ HART VERDRAHTET (zum Testen; wenn alles läuft, können wir wieder auf Env wechseln)
-const API = 'https://script.google.com/macros/s/AKfycbw80hHCsxa8dJKyrTPg7Ft2UlVvr-XCfFADRSqzEfrBuIzf9Mjpbe2D_bXWOniP1l8l/exec';
+const API = 'https://script.google.com/macros/s/AKfycbz1XOJqwgoJ2cHu94lb6XtKfA_0PE4TEeeUp9pr3SzsgjVjB_JYDEIsfZYBCfSHOpuC/exec';
 
 function apiCall(path, method='GET', body){
   const url = API + '?path=' + encodeURIComponent(path);
