@@ -1,139 +1,175 @@
-import React, {useEffect, useState} from 'react';
+import React, { useState, useEffect } from 'react';
+import './styles.css';
 
-// ✅ HART VERDRAHTET (zum Testen; wenn alles läuft, können wir wieder auf Env wechseln)
-const API = 'https://script.google.com/macros/s/AKfycbz1XOJqwgoJ2cHu94lb6XtKfA_0PE4TEeeUp9pr3SzsgjVjB_JYDEIsfZYBCfSHOpuC/exec';
+const API = 'https://script.google.com/macros/s/AKfycbwE39OZOCQMP6lElTFmdBUuIbNb3qtAdXBnEMLu6TFps7yJms1RKmWRbKip0JgbndOr/exec';
 
-function apiCall(path, method='GET', body){
-  const url = API + '?path=' + encodeURIComponent(path);
-  const options = { method };
-  if (body) {
-    options.body = JSON.stringify(body);
-    options.headers = { 'Content-Type':'application/json' };
-  }
-  return fetch(url, options).then(async r => {
-    const txt = await r.text();
-    try { return JSON.parse(txt); } catch(e) { return {ok:false, error:'invalid_json', raw:txt}; }
-  }).catch(err => ({ok:false, error:String(err)}));
-}
+export default function App() {
+  const [pw, setPw] = useState(localStorage.getItem('tb_pw') || '');
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [players, setPlayers] = useState([]);
+  const [bids, setBids] = useState([]);
+  const [highest, setHighest] = useState({});
 
-export default function App(){
-  const [loggedIn,setLoggedIn] = useState(false);
-  const [pw,setPw] = useState('');
-  const [state,setState] = useState({players:[],bids:[],highest:{}});
-  const [form, setForm] = useState({playerName:'',team:'',marketValue:''});
-  const [msg,setMsg] = useState('');
-
-  useEffect(()=>{
-    // Polling nur wenn eingeloggt
-    if (!loggedIn) return;
-    const t = setInterval(()=>refresh(), 4000);
-    refresh();
-    return ()=>clearInterval(t);
-  }, [loggedIn]);
-
-  function refresh(){
-    apiCall('getState','POST',{password: localStorage.getItem('tb_pw')})
-      .then(r=>{
-        if (r.ok) { setState(r); setMsg(''); }
-        else setMsg('Fehler getState: ' + JSON.stringify(r));
-      });
-  }
-
-  async function doLogin(){
+  // ---- Login ----
+  async function doLogin() {
     setMsg('Prüfe Login…');
-    if (!pw) { setMsg('Bitte Passwort eingeben.'); return; }
-    const r = await apiCall('login','POST',{password: pw});
-    if (r && r.ok){
-      localStorage.setItem('tb_pw', pw);
-      setLoggedIn(true);
-      setMsg('');
-    } else {
-      setMsg('Login fehlgeschlagen. Stimmt das Passwort?');
+    if (!pw) { 
+      setMsg('Bitte Passwort eingeben.'); 
+      return; 
+    }
+
+    // 👉 Login per GET mit Query-Param (kein Preflight/CORS)
+    const url = API + '?path=login&password=' + encodeURIComponent(pw);
+
+    try {
+      const res = await fetch(url);
+      const txt = await res.text();
+      const r = JSON.parse(txt);
+
+      if (r && r.ok) {
+        localStorage.setItem('tb_pw', pw);
+        setLoggedIn(true);
+        setMsg('');
+      } else {
+        setMsg('Login fehlgeschlagen. Stimmt das Passwort?');
+      }
+    } catch (e) {
+      setMsg('Netzwerkfehler beim Login: ' + String(e));
     }
   }
 
-  function addPlayer(){
-    const payload = {...form, password: localStorage.getItem('tb_pw')};
-    if (!payload.playerName || !payload.marketValue){ setMsg('Bitte Spielername und Marktwert angeben.'); return; }
-    apiCall('addPlayer','POST',payload).then(r=>{
-      if (r.ok){ setForm({playerName:'',team:'',marketValue:''}); refresh(); }
-      else setMsg('Fehler addPlayer: ' + JSON.stringify(r));
-    });
+  // ---- API Call Helper ----
+  async function apiCall(path, method = 'GET', body) {
+    const url = API + '?path=' + encodeURIComponent(path);
+    const options = { method };
+
+    if (body) {
+      const form = new URLSearchParams(body).toString();
+      options.body = form;
+      options.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+      options.method = 'POST';
+    }
+
+    try {
+      const res = await fetch(url, options);
+      const txt = await res.text();
+      return JSON.parse(txt);
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
   }
 
-  function placeBid(pid){
-    const bidderName = prompt('Dein Name?');
-    const bidValue = prompt('Gebotswert (z. B. 5 Mio oder Spielername)');
-    if (!bidderName || !bidValue) return;
-    const payload = { playerId: pid, bidderName, bidValue, password: localStorage.getItem('tb_pw') };
-    apiCall('placeBid','POST',payload).then(r=>{
-      if (r.ok) { refresh(); }
-      else setMsg('Fehler placeBid: ' + JSON.stringify(r));
-    });
+  // ---- Daten laden ----
+  async function loadState() {
+    setMsg('Lade aktuelle Daten…');
+    const data = await apiCall('getState', 'POST', { password: pw });
+    if (data.ok) {
+      setPlayers(data.players || []);
+      setBids(data.bids || []);
+      setHighest(data.highest || {});
+      setMsg('');
+    } else {
+      setMsg('Fehler beim Laden: ' + (data.error || 'unbekannt'));
+    }
   }
 
-  function withdrawBid(bidId){
-    if (!confirm('Gebot wirklich zurückziehen?')) return;
-    apiCall('withdrawBid','POST',{bidId, password: localStorage.getItem('tb_pw')})
-      .then(r=>{
-        if (r.ok) refresh();
-        else setMsg('Fehler withdrawBid: ' + JSON.stringify(r));
-      });
+  useEffect(() => {
+    if (loggedIn) loadState();
+  }, [loggedIn]);
+
+  // ---- Spieler hinzufügen ----
+  async function addPlayer() {
+    const playerName = prompt('Spielername:');
+    const team = prompt('Teamname:');
+    const marketValue = prompt('Marktwert:');
+    if (!playerName || !team || !marketValue) return;
+
+    const res = await apiCall('addPlayer', 'POST', { password: pw, playerName, team, marketValue });
+    if (res.ok) {
+      alert('Spieler hinzugefügt!');
+      loadState();
+    } else {
+      alert('Fehler: ' + res.error);
+    }
   }
 
-  // Login-Ansicht
-  if (!loggedIn) return (
-    <div style={{padding:20, maxWidth:900, margin:'0 auto'}}>
-      <div style={{fontSize:12, opacity:0.6, textAlign:'right'}}>API: {API}</div>
-      <h2>Titanic Bademeister — Login</h2>
-      <input value={pw} onChange={e=>setPw(e.target.value)} placeholder='Passwort' />
-      <button onClick={doLogin} style={{marginLeft:8}}>Einloggen</button>
-      <p>Benutze das Passwort, das du bekommen hast.</p>
-      {msg && <p style={{color:'crimson'}}>{msg}</p>}
-    </div>
-  );
+  // ---- Gebot abgeben ----
+  async function placeBid(id) {
+    const bidValue = prompt('Gebot für diesen Spieler:');
+    if (!bidValue) return;
+    const res = await apiCall('placeBid', 'POST', { password: pw, playerId: id, bidValue });
+    if (res.ok) {
+      alert('Gebot erfolgreich!');
+      loadState();
+    } else {
+      alert('Fehler: ' + res.error);
+    }
+  }
 
-  // Haupt-UI
+  // ---- Reset ----
+  async function resetAll() {
+    if (!window.confirm('Wirklich alles löschen?')) return;
+    const res = await apiCall('resetNow', 'POST', { password: pw });
+    if (res.ok) {
+      alert('Alles zurückgesetzt!');
+      loadState();
+    } else {
+      alert('Fehler beim Reset: ' + res.error);
+    }
+  }
+
+  // ---- UI ----
+  if (!loggedIn) {
+    return (
+      <div className="login-container">
+        <h1>Titanic Bademeister — Login</h1>
+        <input
+          value={pw}
+          onChange={e => setPw(e.target.value)}
+          placeholder="Passwort"
+        />
+        <button onClick={doLogin}>Einloggen</button>
+        {msg && <p className="msg">{msg}</p>}
+        <p>Benutze das Passwort, das du bekommen hast.</p>
+      </div>
+    );
+  }
+
   return (
-    <div style={{padding:20, maxWidth:900, margin:'0 auto'}}>
-      <div style={{fontSize:12, opacity:0.6, textAlign:'right'}}>API: {API}</div>
-      <h1>Titanic Bademeister — Kickbase Auktionen</h1>
+    <div className="app">
+      <h1>Titanic Bademeister</h1>
+      <button onClick={addPlayer}>Spieler hinzufügen</button>
+      <button onClick={resetAll}>Reset</button>
+      <button onClick={loadState}>Aktualisieren</button>
 
-      {msg && <p style={{color:'crimson'}}>{msg}</p>}
+      {msg && <p className="msg">{msg}</p>}
 
-      <section style={{marginTop:20}}>
-        <h3>Spieler einstellen</h3>
-        <input placeholder='Spielername' value={form.playerName} onChange={e=>setForm({...form, playerName:e.target.value})} />{' '}
-        <input placeholder='Team' value={form.team} onChange={e=>setForm({...form, team:e.target.value})} />{' '}
-        <input placeholder='Marktwert (Startgebot)' value={form.marketValue} onChange={e=>setForm({...form, marketValue:e.target.value})} />{' '}
-        <button onClick={addPlayer}>Spieler einstellen</button>
-      </section>
-
-      <section style={{marginTop:30}}>
-        <h3>Aktuelle Angebote</h3>
-        {state.players.map(p=>{
-          const highest = state.highest[p.id];
-          return (
-            <div key={p.id} style={{border:'1px solid #ddd', padding:10, marginBottom:10}}>
-              <div style={{fontWeight:700}}>{p.playerName} — {p.team}</div>
-              <div>Marktwert / Start: {p.marketValue}</div>
-              <div style={{marginTop:8}}><button onClick={()=>placeBid(p.id)}>Bieten</button></div>
-              <div style={{marginTop:8}}>Aktuell höchstes Gebot: {highest ? `${highest.bidValue} von ${highest.bidderName}` : 'keine Gebote'}</div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section style={{marginTop:30}}>
-        <h3>Alle Gebote (Chronologisch)</h3>
-        {state.bids.map(b=> (
-          <div key={b.id} style={{borderBottom:'1px solid #eee', padding:6}}>
-            <div>{b.bidderName} → {b.bidValue} (für Spieler {b.playerId})</div>
-            <div style={{fontSize:12, opacity:0.6}}>{b.timestamp}</div>
-            <div><button onClick={()=>withdrawBid(b.id)}>Zurückziehen</button></div>
-          </div>
-        ))}
-      </section>
+      <h2>Spieler</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Team</th>
+            <th>Marktwert</th>
+            <th>Höchstes Gebot</th>
+            <th>Aktion</th>
+          </tr>
+        </thead>
+        <tbody>
+          {players.map(p => (
+            <tr key={p.id}>
+              <td>{p.playerName}</td>
+              <td>{p.team}</td>
+              <td>{p.marketValue}</td>
+              <td>{highest[p.id]?.bidValue || '-'}</td>
+              <td>
+                <button onClick={() => placeBid(p.id)}>Bieten</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
