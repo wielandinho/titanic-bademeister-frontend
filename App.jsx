@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import './styles.css';
 
-// ❗ DEINE Apps-Script Web-App URL:
+// ❗ Deine Apps Script Web-App URL:
 const API = 'https://script.google.com/macros/s/AKfycbwNztV3o25lGbDdCX8ziUI6ruJPuY6XcPcfJPHV3qiKMGyjf5q4RkGlOzbxt4xsYGQD/exec';
 const DEFAULT_PW = 'Sieger';
 
-// ---- kleine Helper ----
+/* ----------------------------- Utils ----------------------------- */
+
+// Fetch mit JSON-Parsing + robustem Fehlerhandling
 async function fetchJSON(url, options) {
   try {
     const res = await fetch(url, options);
@@ -34,6 +36,107 @@ async function apiCall(path, body) {
   return fetchJSON(url);
 }
 
+// Initialen aus einem Namen (Fallback-Avatar)
+function initials(name = '') {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '🧑';
+  const first = parts[0][0] || '';
+  const last  = parts.length > 1 ? parts[parts.length-1][0] : '';
+  return (first + last).toUpperCase();
+}
+
+/* -------------------- Wikipedia Bild-Suche + Cache -------------------- */
+/**
+ * Holt ein Spielerbild von Wikipedia (en/de), cached in localStorage.
+ * Strategie:
+ *  1) en: "Name (footballer)" → "Name" → "Name (soccer)"
+ *  2) de: "Name (Fußballspieler)" → "Name"
+ * Ignoriert Disambiguation-Seiten. Größe ~320px.
+ */
+async function resolvePlayerImage(name) {
+  if (!name) return null;
+
+  const cacheKey = 'tb_img_' + name.toLowerCase();
+  const cached = localStorage.getItem(cacheKey);
+  if (cached === 'null') return null;
+  if (cached) return cached;
+
+  const enc = s => encodeURIComponent(s);
+  const hosts = ['en', 'de'];
+  const candidatesByHost = {
+    en: [ `${name} (footballer)`, name, `${name} (soccer)`, `${name} (football player)` ],
+    de: [ `${name} (Fußballspieler)`, name ]
+  };
+
+  for (const h of hosts) {
+    const candidates = candidatesByHost[h] || [name];
+    for (const title of candidates) {
+      try {
+        const url = `https://${h}.wikipedia.org/api/rest_v1/page/summary/${enc(title)}`;
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const js = await res.json();
+        if (js.type === 'disambiguation') continue;
+        const thumb = js.thumbnail && (js.thumbnail.source || js.thumbnail.url);
+        if (thumb) {
+          localStorage.setItem(cacheKey, thumb);
+          return thumb;
+        }
+      } catch (e) {
+        // ignore and try next
+      }
+    }
+  }
+  localStorage.setItem(cacheKey, 'null');
+  return null;
+}
+
+/* ------------------------- Avatar Komponente ------------------------- */
+
+function PlayerAvatar({ name }) {
+  const [url, setUrl] = useState(null);
+  const [tried, setTried] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const img = await resolvePlayerImage(name);
+      if (!cancelled) { setUrl(img); setTried(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [name]);
+
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt={name}
+        style={{
+          width: 64, height: 64, borderRadius: '50%',
+          objectFit: 'cover', background: '#eee', flexShrink: 0
+        }}
+        onError={() => setUrl(null)}
+      />
+    );
+  }
+
+  // Fallback auf Initialen (oder während Ladezeit)
+  return (
+    <div
+      style={{
+        width: 64, height: 64, borderRadius: '50%', background: '#eef2ff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontWeight: 700
+      }}
+      title={tried ? 'Kein Bild gefunden – Initialen' : 'Lade Bild …'}
+    >
+      {initials(name)}
+    </div>
+  );
+}
+
+/* ------------------------------ App ------------------------------ */
+
 export default function App() {
   const [pw, setPw] = useState(localStorage.getItem('tb_pw') || DEFAULT_PW);
   const [loggedIn, setLoggedIn] = useState(false);
@@ -43,7 +146,7 @@ export default function App() {
   const [highest, setHighest] = useState({});
   const [debug, setDebug] = useState('');
 
-  // Neuer: persistenter Anzeigename fürs Bieten
+  // Persistenter Anzeigename fürs Bieten
   const [userName, setUserName] = useState(localStorage.getItem('tb_name') || '');
   function saveName() {
     const n = userName.trim();
@@ -52,7 +155,7 @@ export default function App() {
     alert('Name gespeichert.');
   }
 
-  // ---- AUTO-LOGIN direkt beim Mount ----
+  // Auto-Login direkt beim Mount
   useEffect(() => {
     (async () => {
       setMsg('Versuche Auto-Login …');
@@ -72,7 +175,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- State laden ----
+  // State laden
   async function loadState(currentPw = pw) {
     const r = await apiCall('getState', { password: currentPw });
     setDebug(d => d + `\ngetState Response (status ${r.status ?? 'n/a'}): ${r.raw ?? JSON.stringify(r)}`);
@@ -85,7 +188,7 @@ export default function App() {
     }
   }
 
-  // ---- Spieler hinzufügen (Owner = userName) ----
+  // Spieler hinzufügen (Owner = userName)
   async function addPlayer() {
     const playerName = prompt('Spielername:');
     const team = prompt('Team:');
@@ -108,7 +211,7 @@ export default function App() {
     }
   }
 
-  // ---- Gebot abgeben (benutzt userName) ----
+  // Gebot abgeben (benutzt userName)
   async function placeBid(playerId) {
     const name = (userName || '').trim();
     if (!name) { alert('Bitte oben deinen Namen speichern.'); return; }
@@ -129,7 +232,7 @@ export default function App() {
     }
   }
 
-  // ---- Gebot zurückziehen ----
+  // Gebot zurückziehen
   async function withdrawBid(bidId) {
     if (!window.confirm('Gebot wirklich zurückziehen?')) return;
     const r = await apiCall('withdrawBid', { password: pw, bidId });
@@ -141,7 +244,7 @@ export default function App() {
     }
   }
 
-  // ---- Admin: Reset sofort ----
+  // Admin: Reset sofort
   async function resetAll() {
     if (!window.confirm('Wirklich ALLES zurücksetzen?')) return;
     const r = await apiCall('resetNow', { password: pw });
@@ -154,27 +257,29 @@ export default function App() {
     }
   }
 
+  /* ----------------------------- UI ----------------------------- */
+
   return (
-    <div className="app" style={{ padding: 20, maxWidth: 900, margin: '0 auto' }}>
+    <div className="app" style={{ padding: 20, maxWidth: 1000, margin: '0 auto' }}>
       <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'right' }}>
         API: {API}
       </div>
 
-      <h1>Titanic Bademeister</h1>
+      <h1 style={{ marginBottom: 8 }}>Titanic Bademeister</h1>
+      <div style={{ opacity: 0.7, marginBottom: 16 }}>Gebotsrunde: jede Woche bis Donnerstag, 23:00 Uhr • Reset: Freitag 15:00</div>
 
+      {/* Login/Debug */}
       {!loggedIn && (
         <>
           <p style={{ color: 'crimson' }}>{msg}</p>
-          <p><b>Hinweis:</b> Auto-Login nutzt Passwort „Sieger“. Wenn es nicht klappt, in Apps Script
-            <i> PASSWORD</i> prüfen und Web-App neu bereitstellen.</p>
-          <textarea readOnly value={debug} style={{ width: '100%', height: 140 }} />
+          <textarea readOnly value={debug} style={{ width: '100%', height: 120 }} />
         </>
       )}
 
       {loggedIn && (
         <>
-          {/* Name einstellen */}
-          <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Nutzername */}
+          <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <label><b>Dein Name:</b></label>
             <input
               value={userName}
@@ -191,53 +296,59 @@ export default function App() {
             </div>
           </div>
 
-          {msg && <p className="msg" style={{ color: 'crimson' }}>{msg}</p>}
+          {/* Spieler-Kacheln */}
+          <h2 style={{ marginTop: 8 }}>Angebotene Spieler</h2>
+          {!players.length && <div style={{ opacity: 0.6, marginBottom: 12 }}>Noch keine Spieler eingestellt.</div>}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+            gap: 12
+          }}>
+            {players.map(p => {
+              const hi = highest[p.id];
+              return (
+                <div key={p.id} style={{
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 12,
+                  padding: 12,
+                  background: 'white',
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'center'
+                }}>
+                  <PlayerAvatar name={p.playerName} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.playerName}</div>
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>{p.team || '—'}</div>
+                    <div style={{ marginTop: 6 }}>Marktwert / Start: <b>{p.marketValue}</b></div>
+                    <div style={{ marginTop: 4, fontSize: 14 }}>
+                      Aktuell höchstes Gebot: <b>{hi ? `${hi.bidValue} von ${hi.bidderName || '—'}` : '—'}</b>
+                    </div>
+                  </div>
+                  <div>
+                    <button onClick={() => placeBid(p.id)}>Bieten</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
-          <h2>Spieler</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Team</th>
-                <th>Marktwert</th>
-                <th>Höchstes Gebot</th>
-                <th>Aktion</th>
-              </tr>
-            </thead>
-            <tbody>
-              {players.map(p => (
-                <tr key={p.id}>
-                  <td>{p.playerName}</td>
-                  <td>{p.team}</td>
-                  <td>{p.marketValue}</td>
-                  <td>
-                    {highest[p.id]?.bidValue
-                      ? `${highest[p.id].bidValue} von ${highest[p.id].bidderName || '—'}`
-                      : '—'}
-                  </td>
-                  <td><button onClick={() => placeBid(p.id)}>Bieten</button></td>
-                </tr>
-              ))}
-              {!players.length && (
-                <tr><td colSpan="5" style={{ opacity: 0.6 }}>Noch keine Spieler eingestellt.</td></tr>
-              )}
-            </tbody>
-          </table>
-
-          <h2>Alle Gebote</h2>
-          <div style={{ maxHeight: 240, overflow: 'auto', border: '1px solid #eee', padding: 8 }}>
+          {/* Alle Gebote */}
+          <h2 style={{ marginTop: 24 }}>Alle Gebote</h2>
+          <div style={{ maxHeight: 280, overflow: 'auto', border: '1px solid #eee', borderRadius: 8, padding: 8, background: '#fff' }}>
+            {bids.length === 0 && <div style={{ opacity: 0.6 }}>Noch keine Gebote.</div>}
             {bids.map(b => (
-              <div key={b.id} style={{ borderBottom: '1px solid #f0f0f0', padding: '4px 0' }}>
-                <div>{b.bidderName || '—'} → {b.bidValue} (Spieler {b.playerId})</div>
+              <div key={b.id} style={{ borderBottom: '1px solid #f0f0f0', padding: '6px 0' }}>
+                <div><b>{b.bidderName || '—'}</b> → {b.bidValue} <span style={{ opacity: 0.6 }}> (Spieler {b.playerId})</span></div>
                 <div style={{ fontSize: 12, opacity: 0.6 }}>{b.timestamp}</div>
                 <button onClick={() => withdrawBid(b.id)}>Zurückziehen</button>
               </div>
             ))}
-            {!bids.length && <div style={{ opacity: 0.6 }}>Noch keine Gebote.</div>}
           </div>
 
+          {/* Debug */}
           <h3>Debug</h3>
-          <textarea readOnly value={debug} style={{ width: '100%', height: 140 }} />
+          <textarea readOnly value={debug} style={{ width: '100%', height: 120 }} />
         </>
       )}
     </div>
