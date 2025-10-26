@@ -1,13 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import './styles.css';
 
-// ❗ DEINE Backend-URL (Apps Script Web-App URL) – exakt so eintragen:
+// ❗ DEINE Apps-Script Web-App URL:
 const API = 'https://script.google.com/macros/s/AKfycbwNztV3o25lGbDdCX8ziUI6ruJPuY6XcPcfJPHV3qiKMGyjf5q4RkGlOzbxt4xsYGQD/exec';
-
-// Standard-Passwort für Auto-Login
 const DEFAULT_PW = 'Sieger';
 
-// ---- Hilfsfunktion: einfache Fetch+JSON mit Fehleranzeige ----
+// ---- kleine Helper ----
 async function fetchJSON(url, options) {
   try {
     const res = await fetch(url, options);
@@ -22,7 +20,7 @@ async function fetchJSON(url, options) {
   }
 }
 
-// ---- Form-POST (ohne Preflight) ----
+// Form-POST (vermeidet Preflight/CORS)
 async function apiCall(path, body) {
   const url = API + '?path=' + encodeURIComponent(path);
   if (body) {
@@ -33,24 +31,31 @@ async function apiCall(path, body) {
       body: form
     });
   }
-  // GET
   return fetchJSON(url);
 }
 
 export default function App() {
   const [pw, setPw] = useState(localStorage.getItem('tb_pw') || DEFAULT_PW);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [msg, setMsg] = useState('');
   const [players, setPlayers] = useState([]);
   const [bids, setBids] = useState([]);
   const [highest, setHighest] = useState({});
-  const [msg, setMsg] = useState('');
   const [debug, setDebug] = useState('');
 
-  // ---- AUTO-LOGIN direkt beim Start ----
+  // Neuer: persistenter Anzeigename fürs Bieten
+  const [userName, setUserName] = useState(localStorage.getItem('tb_name') || '');
+  function saveName() {
+    const n = userName.trim();
+    if (!n) { alert('Bitte einen Namen eingeben.'); return; }
+    localStorage.setItem('tb_name', n);
+    alert('Name gespeichert.');
+  }
+
+  // ---- AUTO-LOGIN direkt beim Mount ----
   useEffect(() => {
     (async () => {
       setMsg('Versuche Auto-Login …');
-      // Login als GET (keine Preflight/CORS-Probleme)
       const loginUrl = API + '?path=login&password=' + encodeURIComponent(pw);
       const r = await fetchJSON(loginUrl);
       setDebug(`Login Response (status ${r.status ?? 'n/a'}): ${r.raw ?? JSON.stringify(r)}`);
@@ -59,8 +64,9 @@ export default function App() {
         setLoggedIn(true);
         setMsg('Eingeloggt. Lade Daten …');
         await loadState(pw);
+        setMsg('');
       } else {
-        setMsg('Login fehlgeschlagen. Prüfe PASSWORD Script-Property und URL.');
+        setMsg('Login fehlgeschlagen. Prüfe PASSWORD in den Script-Eigenschaften oder die Web-App URL (neu bereitstellen).');
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,20 +80,25 @@ export default function App() {
       setPlayers(r.data.players || []);
       setBids(r.data.bids || []);
       setHighest(r.data.highest || {});
-      setMsg('');
     } else {
       setMsg('Fehler beim Laden: ' + (r.error || (r.data && r.data.error) || 'unbekannt'));
     }
   }
 
-  // ---- Spieler hinzufügen ----
+  // ---- Spieler hinzufügen (Owner = userName) ----
   async function addPlayer() {
     const playerName = prompt('Spielername:');
     const team = prompt('Team:');
     const marketValue = prompt('Marktwert (Startgebot):');
     if (!playerName || !marketValue) return;
 
-    const r = await apiCall('addPlayer', { password: pw, playerName, team: team || '', marketValue });
+    const r = await apiCall('addPlayer', {
+      password: pw,
+      playerName,
+      team: team || '',
+      marketValue,
+      owner: (userName || '').trim()
+    });
     setDebug(d => d + `\naddPlayer Response (status ${r.status ?? 'n/a'}): ${r.raw ?? JSON.stringify(r)}`);
     if (r.ok && r.data && r.data.ok) {
       alert('Spieler hinzugefügt.');
@@ -97,11 +108,19 @@ export default function App() {
     }
   }
 
-  // ---- Gebot abgeben ----
+  // ---- Gebot abgeben (benutzt userName) ----
   async function placeBid(playerId) {
-    const bidValue = prompt('Dein Gebot (z. B. 5.000.000):');
+    const name = (userName || '').trim();
+    if (!name) { alert('Bitte oben deinen Namen speichern.'); return; }
+    const bidValue = prompt('Dein Gebot (z. B. 5.000.000 oder Text):');
     if (!bidValue) return;
-    const r = await apiCall('placeBid', { password: pw, playerId, bidValue });
+
+    const r = await apiCall('placeBid', {
+      password: pw,
+      playerId,
+      bidValue,
+      bidderName: name
+    });
     setDebug(d => d + `\nplaceBid Response (status ${r.status ?? 'n/a'}): ${r.raw ?? JSON.stringify(r)}`);
     if (r.ok && r.data && r.data.ok) {
       loadState();
@@ -122,7 +141,7 @@ export default function App() {
     }
   }
 
-  // ---- Manuelles Reset (Admin) ----
+  // ---- Admin: Reset sofort ----
   async function resetAll() {
     if (!window.confirm('Wirklich ALLES zurücksetzen?')) return;
     const r = await apiCall('resetNow', { password: pw });
@@ -146,21 +165,33 @@ export default function App() {
       {!loggedIn && (
         <>
           <p style={{ color: 'crimson' }}>{msg}</p>
-          <p><b>Hinweis:</b> Auto-Login versucht Passwort „Sieger“. Wenn das nicht klappt, stimmt vermutlich
-            die <i>Script-Eigenschaft</i> <code>PASSWORD</code> oder die Web-App-URL nicht (Apps Script neu bereitstellen!).</p>
-          <textarea readOnly value={debug} style={{width:'100%',height:140}} />
+          <p><b>Hinweis:</b> Auto-Login nutzt Passwort „Sieger“. Wenn es nicht klappt, in Apps Script
+            <i> PASSWORD</i> prüfen und Web-App neu bereitstellen.</p>
+          <textarea readOnly value={debug} style={{ width: '100%', height: 140 }} />
         </>
       )}
 
       {loggedIn && (
         <>
-          <div style={{ marginBottom: 12 }}>
-            <button onClick={addPlayer}>Spieler hinzufügen</button>{' '}
-            <button onClick={resetAll}>Reset</button>{' '}
-            <button onClick={() => loadState()}>Aktualisieren</button>
+          {/* Name einstellen */}
+          <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label><b>Dein Name:</b></label>
+            <input
+              value={userName}
+              onChange={e => setUserName(e.target.value)}
+              placeholder="z. B. Jonas"
+              style={{ padding: '6px 8px' }}
+            />
+            <button onClick={saveName}>Speichern</button>
+
+            <div style={{ marginLeft: 'auto' }}>
+              <button onClick={addPlayer}>Spieler hinzufügen</button>{' '}
+              <button onClick={resetAll}>Reset</button>{' '}
+              <button onClick={() => loadState()}>Aktualisieren</button>
+            </div>
           </div>
 
-          {msg && <p style={{ color: 'crimson' }}>{msg}</p>}
+          {msg && <p className="msg" style={{ color: 'crimson' }}>{msg}</p>}
 
           <h2>Spieler</h2>
           <table>
@@ -179,26 +210,34 @@ export default function App() {
                   <td>{p.playerName}</td>
                   <td>{p.team}</td>
                   <td>{p.marketValue}</td>
-                  <td>{highest[p.id]?.bidValue ? `${highest[p.id].bidValue} von ${highest[p.id].bidderName}` : '-'}</td>
+                  <td>
+                    {highest[p.id]?.bidValue
+                      ? `${highest[p.id].bidValue} von ${highest[p.id].bidderName || '—'}`
+                      : '—'}
+                  </td>
                   <td><button onClick={() => placeBid(p.id)}>Bieten</button></td>
                 </tr>
               ))}
+              {!players.length && (
+                <tr><td colSpan="5" style={{ opacity: 0.6 }}>Noch keine Spieler eingestellt.</td></tr>
+              )}
             </tbody>
           </table>
 
           <h2>Alle Gebote</h2>
-          <div style={{maxHeight: 240, overflow:'auto', border:'1px solid #eee', padding:8}}>
+          <div style={{ maxHeight: 240, overflow: 'auto', border: '1px solid #eee', padding: 8 }}>
             {bids.map(b => (
-              <div key={b.id} style={{borderBottom:'1px solid #f0f0f0', padding:'4px 0'}}>
-                <div>{b.bidderName} → {b.bidValue} (Spieler {b.playerId})</div>
-                <div style={{fontSize:12, opacity:0.6}}>{b.timestamp}</div>
+              <div key={b.id} style={{ borderBottom: '1px solid #f0f0f0', padding: '4px 0' }}>
+                <div>{b.bidderName || '—'} → {b.bidValue} (Spieler {b.playerId})</div>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>{b.timestamp}</div>
                 <button onClick={() => withdrawBid(b.id)}>Zurückziehen</button>
               </div>
             ))}
+            {!bids.length && <div style={{ opacity: 0.6 }}>Noch keine Gebote.</div>}
           </div>
 
           <h3>Debug</h3>
-          <textarea readOnly value={debug} style={{width:'100%',height:140}} />
+          <textarea readOnly value={debug} style={{ width: '100%', height: 140 }} />
         </>
       )}
     </div>
