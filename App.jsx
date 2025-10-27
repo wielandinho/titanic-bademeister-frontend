@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import './styles.css';
 
-// Deine Apps-Script Web-App URL:
+// Deine Apps Script Web-App URL:
 const API = 'https://script.google.com/macros/s/AKfycbyNwEn3IYNasZ6DOQZJvOwTFAzEWgyz3cUmtwGv1WHaKYhc97KWctOqvw2t9Q2IiJM/exec';
 const DEFAULT_PW = 'Sieger';
 
@@ -14,20 +14,14 @@ async function fetchJSON(url, options){
     catch{ return { ok:false, error:'invalid_json', raw:txt, status: res.status }; }
   }catch(e){ return { ok:false, error:String(e) }; }
 }
-
 async function apiCall(path, body){
   const url = API + '?path=' + encodeURIComponent(path);
   if (body){
     const form = new URLSearchParams(body).toString();
-    return fetchJSON(url, {
-      method:'POST',
-      headers: { 'Content-Type':'application/x-www-form-urlencoded' },
-      body: form
-    });
+    return fetchJSON(url, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: form });
   }
   return fetchJSON(url);
 }
-
 function initials(name=''){
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '🧑';
@@ -66,18 +60,13 @@ async function resolvePlayerImage(name){
   localStorage.setItem(key, 'null');
   return null;
 }
-
 function Avatar({ name }){
   const [url, setUrl] = useState(null);
   useEffect(()=>{
     let dead = false;
-    (async ()=>{
-      const u = await resolvePlayerImage(name);
-      if (!dead) setUrl(u);
-    })();
-    return ()=>{ dead = true; }
+    (async ()=>{ const u = await resolvePlayerImage(name); if(!dead) setUrl(u); })();
+    return ()=>{ dead = true; };
   }, [name]);
-
   return (
     <div className="avatar" title={name}>
       {url ? <img src={url} alt={name} onError={()=>setUrl(null)} /> : initials(name)}
@@ -85,22 +74,17 @@ function Avatar({ name }){
   );
 }
 
-/* ---------- Countdown Helfer ---------- */
+/* ---------- Countdown helpers ---------- */
 function nextThursday2300(now = new Date()) {
-  // Nächster Donnerstag 23:00 lokale Zeit
   const d = new Date(now);
   const day = d.getDay(); // So=0, Mo=1,... Do=4
+  const daysUntilThu = (4 - day + 7) % 7 || (d.getHours() >= 23 ? 7 : 0);
   const target = new Date(d);
-  // Baseline: diese Woche Donnerstag 23:00
-  target.setDate(d.getDate() + ((4 - day + 7) % 7));
-  target.setHours(23, 0, 0, 0);
-  // wenn aktuell bereits nach Zielzeit → +7 Tage
-  if (d.getTime() >= target.getTime()) {
-    target.setDate(target.getDate() + 7);
-  }
+  target.setDate(d.getDate() + daysUntilThu);
+  target.setHours(23,0,0,0);
+  if (day === 4 && d.getTime() >= target.getTime()) target.setDate(target.getDate() + 7);
   return target;
 }
-
 function fmtCountdown(ms) {
   if (ms <= 0) return 'Auktion beendet';
   const s = Math.floor(ms/1000);
@@ -113,7 +97,6 @@ function fmtCountdown(ms) {
 }
 
 /* =========================== App =========================== */
-
 export default function App(){
   const [pw] = useState(localStorage.getItem('tb_pw') || DEFAULT_PW);
   const [loggedIn, setLoggedIn] = useState(false);
@@ -121,16 +104,16 @@ export default function App(){
   const [players, setPlayers] = useState([]);
   const [bids, setBids] = useState([]);
   const [highest, setHighest] = useState({});
+  const [keepers, setKeepers] = useState([]);
+  const [myKeepers, setMyKeepers] = useState(localStorage.getItem('tb_my_keepers') || '');
+  const [countdown, setCountdown] = useState('');
+  const [isRed, setIsRed] = useState(false);
   const [debug, setDebug] = useState('');
 
   const [userName, setUserName] = useState(localStorage.getItem('tb_name') || '');
-
-  // --- NEU: Keeper-States
-  const [keepers, setKeepers] = useState([]);
-  const [myKeepers, setMyKeepers] = useState(localStorage.getItem('tb_my_keepers') || '');
-
-  // --- NEU: Countdown
-  const [countdown, setCountdown] = useState('');
+  const [pollMs, setPollMs] = useState(1000);
+  const isFetchingRef = useRef(false);
+  const pollTimerRef = useRef(null);
 
   function saveName(){
     const n = userName.trim();
@@ -139,7 +122,7 @@ export default function App(){
     setMsg('Name gespeichert.'); setTimeout(()=>setMsg(''), 1200);
   }
 
-  // Auto-Login
+  // Login once
   useEffect(()=>{
     (async ()=>{
       setMsg('Versuche Auto-Login …');
@@ -152,23 +135,47 @@ export default function App(){
         await loadState(pw);
         setMsg('');
       } else {
-        setMsg('Login fehlgeschlagen. PASSWORD in Script-Eigenschaften prüfen & Web-App neu bereitstellen.');
+        setMsg('Login fehlgeschlagen. PASSWORD prüfen.');
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Countdown-Interval
-  useEffect(() => {
-    const tick = () => {
+  // Countdown tick
+  useEffect(()=>{
+    const tick = ()=>{
       const now = new Date();
       const t = nextThursday2300(now);
-      setCountdown(fmtCountdown(t - now));
+      const diff = t - now;
+      setCountdown(fmtCountdown(diff));
+      setIsRed(diff <= 24*60*60*1000 && diff > 0);
     };
     tick();
     const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
+    return ()=>clearInterval(id);
   }, []);
+
+  // Live polling
+  useEffect(()=>{
+    if (!loggedIn) return;
+
+    const onVis = ()=> setPollMs(document.visibilityState === 'visible' ? 1000 : 8000);
+    onVis();
+    document.addEventListener('visibilitychange', onVis);
+
+    const tick = async ()=>{
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      try{ await loadState(); } finally { isFetchingRef.current = false; }
+    };
+
+    tick();
+    pollTimerRef.current = setInterval(tick, pollMs);
+
+    return ()=>{
+      document.removeEventListener('visibilitychange', onVis);
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, [loggedIn, pollMs]);
 
   async function loadState(currentPw = pw){
     const r = await apiCall('getState', { password: currentPw });
@@ -177,7 +184,7 @@ export default function App(){
       setPlayers(r.data.players || []);
       setBids(r.data.bids || []);
       setHighest(r.data.highest || {});
-      setKeepers(r.data.keepers || []); // <-- NEU
+      setKeepers(r.data.keepers || []);
     } else {
       setMsg('Fehler beim Laden: ' + (r.error || (r.data && r.data.error) || ''));
     }
@@ -189,7 +196,8 @@ export default function App(){
     const marketValue = prompt('Marktwert (Startgebot):');
     if (!playerName || !marketValue) return;
     const r = await apiCall('addPlayer', { password: pw, playerName, team: team || '', marketValue, owner: (userName||'').trim() });
-    if (r.ok && r.data && r.data.ok){ await loadState(); } else { setMsg('Fehler addPlayer: '+(r.error || (r.data && r.data.error))); }
+    if (r.ok && r.data && r.data.ok){ await loadState(); }
+    else { setMsg('Fehler addPlayer: '+(r.error || (r.data && r.data.error))); }
   }
 
   async function placeBid(playerId){
@@ -198,34 +206,36 @@ export default function App(){
     const bidValue = prompt('Dein Gebot (z. B. 5.000.000 oder Text):');
     if (!bidValue) return;
     const r = await apiCall('placeBid', { password: pw, playerId, bidValue, bidderName: name });
-    if (r.ok && r.data && r.data.ok){ await loadState(); } else { setMsg('Fehler placeBid: '+(r.error || (r.data && r.data.error))); }
+    if (r.ok && r.data && r.data.ok){ await loadState(); }
+    else { setMsg('Fehler placeBid: '+(r.error || (r.data && r.data.error))); }
   }
 
   async function withdrawBid(bidId){
     if (!window.confirm('Gebot wirklich zurückziehen?')) return;
     const r = await apiCall('withdrawBid', { password: pw, bidId });
-    if (r.ok && r.data && r.data.ok){ await loadState(); } else { setMsg('Fehler withdrawBid: '+(r.error || (r.data && r.data.error))); }
+    if (r.ok && r.data && r.data.ok){ await loadState(); }
+    else { setMsg('Fehler withdrawBid: '+(r.error || (r.data && r.data.error))); }
+  }
+
+  async function saveKeepers(){
+    const name = (userName||'').trim();
+    if (!name){ setMsg('Bitte oben deinen Namen speichern.'); return; }
+    const text = myKeepers.trim();
+    const r = await apiCall('setKeeper', { password: pw, userName: name, players: text });
+    if (r.ok && r.data && r.data.ok){
+      localStorage.setItem('tb_my_keepers', text);
+      setMsg('Nicht-verkaufen-Liste gespeichert.'); setTimeout(()=>setMsg(''), 1200);
+      await loadState();
+    } else {
+      setMsg('Fehler setKeeper: '+(r.error || (r.data && r.data.error)));
+    }
   }
 
   async function resetAll(){
     if (!window.confirm('Wirklich ALLES zurücksetzen?')) return;
     const r = await apiCall('resetNow', { password: pw });
-    if (r.ok && r.data && r.data.ok){ await loadState(); } else { setMsg('Fehler resetNow: '+(r.error || (r.data && r.data.error))); }
-  }
-
-  // --- NEU: Keeper speichern
-  async function saveKeepers() {
-    const name = (userName || '').trim();
-    if (!name) { setMsg('Bitte oben deinen Namen speichern.'); return; }
-    const text = myKeepers.trim();
-    const r = await apiCall('setKeeper', { password: pw, userName: name, players: text });
-    if (r.ok && r.data && r.data.ok) {
-      localStorage.setItem('tb_my_keepers', text);
-      setMsg('Nicht-verkaufen-Liste gespeichert.'); setTimeout(()=>setMsg(''), 1200);
-      await loadState();
-    } else {
-      setMsg('Fehler setKeeper: ' + (r.error || (r.data && r.data.error)));
-    }
+    if (r.ok && r.data && r.data.ok){ await loadState(); }
+    else { setMsg('Fehler resetNow: '+(r.error || (r.data && r.data.error))); }
   }
 
   return (
@@ -235,9 +245,9 @@ export default function App(){
           <div className="logo" />
           <div>
             <div className="title">Titanic Bademeister</div>
-            {/* NEU: Countdown */}
             <div className="subtle">
-              Gebotsrunde bis Do 23:00 • Reset Fr 15:00 • <b>Countdown:</b> {countdown}
+              Gebotsrunde bis Do 23:00 • Reset Fr 15:00 • 
+              <b style={{color:isRed?'var(--danger)':'var(--accent)'}}>Countdown: {countdown}</b>
             </div>
           </div>
         </div>
@@ -245,22 +255,13 @@ export default function App(){
           <input className="input" value={userName} onChange={e=>setUserName(e.target.value)} placeholder="Dein Name" />
           <button className="btn ghost" onClick={saveName}>Speichern</button>
           <button className="btn secondary" onClick={addPlayer}>Spieler hinzufügen</button>
-          <button className="btn secondary" onClick={()=>loadState()}>Aktualisieren</button>
           <button className="btn" onClick={resetAll}>Reset</button>
         </div>
       </div>
 
-      {msg && <div className={`msg ${/fehler|fehl|error/i.test(msg) ? 'error':'ok'}`}>{msg}</div>}
+      {msg && <div className={`msg ${/fehler|fehl|error/i.test(msg)?'error':'ok'}`}>{msg}</div>}
 
-      {!loggedIn && (
-        <div className="section">
-          <h2>Status</h2>
-          <div className="subtle">Auto-Login nutzen (Passwort „Sieger“). Wenn es nicht klappt, PASSWORD/Deploy prüfen.</div>
-          <textarea readOnly value={debug} style={{width:'100%',height:120, marginTop:8, background:'var(--panel-2)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:8, padding:10}} />
-        </div>
-      )}
-
-      {loggedIn && (
+      {loggedIn ? (
         <>
           <div className="section">
             <h2>Angebotene Spieler</h2>
@@ -270,21 +271,19 @@ export default function App(){
                 const hi = highest[p.id];
                 return (
                   <div className="card" key={p.id}>
-                    <Avatar name={p.playerName} />
+                    <Avatar name={p.playerName}/>
                     <div className="meta">
                       <div className="name">{p.playerName}</div>
-                      <div className="team">{p.team || '—'}</div>
+                      <div className="team">{p.team||'—'}</div>
                       <div className="row">
                         <span className="badge">Start: <b>{p.marketValue}</b></span>
-                        <span className="badge">Owner: <b>{p.owner || '—'}</b></span>
+                        <span className="badge">Owner: <b>{p.owner||'—'}</b></span>
                       </div>
                       <div className="row">
-                        <span>Aktuell: <b className="highlight">{hi ? `${hi.bidValue} von ${hi.bidderName || '—'}` : '—'}</b></span>
+                        <span>Aktuell: <b className="highlight">{hi?`${hi.bidValue} von ${hi.bidderName||'—'}`:'—'}</b></span>
                       </div>
                     </div>
-                    <div>
-                      <button className="btn" onClick={()=>placeBid(p.id)}>Bieten</button>
-                    </div>
+                    <div><button className="btn" onClick={()=>placeBid(p.id)}>Bieten</button></div>
                   </div>
                 );
               })}
@@ -293,34 +292,24 @@ export default function App(){
 
           <div className="section">
             <h2>„Nicht verkaufen“-Listen</h2>
-
-            <div style={{display:'flex', gap:8, alignItems:'flex-start', flexWrap:'wrap', marginBottom:10}}>
-              <div style={{flex:1, minWidth:260}}>
+            <div style={{display:'flex',gap:8,alignItems:'flex-start',flexWrap:'wrap',marginBottom:10}}>
+              <div style={{flex:1,minWidth:260}}>
                 <div className="subtle" style={{marginBottom:6}}>
-                  Deine Liste (Kommagetrennt, z. B.: <i>Kane, Musiala, Kimmich</i>)
+                  Deine Liste (kommagetrennt): <i>Kane, Musiala, Kimmich …</i>
                 </div>
-                <input
-                  className="input"
-                  value={myKeepers}
-                  onChange={e=>setMyKeepers(e.target.value)}
-                  placeholder="Spieler, Spieler, Spieler"
-                  style={{width:'100%'}}
-                />
+                <input className="input" value={myKeepers} onChange={e=>setMyKeepers(e.target.value)} placeholder="Spieler, Spieler, Spieler" style={{width:'100%'}}/>
               </div>
               <button className="btn" onClick={saveKeepers}>Speichern</button>
             </div>
-
             <div className="list">
-              {keepers.length === 0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Einträge.</div>}
-              {keepers.map(k => (
+              {keepers.length===0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Einträge.</div>}
+              {keepers.map(k=>(
                 <div className="row" key={k.id}>
                   <div>
-                    <b>{k.userName || '—'}</b>
-                    <div className="small" style={{marginTop:2}}>
-                      {k.players || '—'}
-                    </div>
+                    <b>{k.userName||'—'}</b>
+                    <div className="small" style={{marginTop:2}}>{k.players||'—'}</div>
                   </div>
-                  <div className="small">{k.updatedAt || k.timestamp || ''}</div>
+                  <div className="small">{k.timestamp}</div>
                 </div>
               ))}
             </div>
@@ -329,13 +318,12 @@ export default function App(){
           <div className="section">
             <h2>Alle Gebote</h2>
             <div className="list">
-              {bids.length === 0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Gebote.</div>}
+              {bids.length===0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Gebote.</div>}
               {bids.map(b=>(
                 <div className="row" key={b.id}>
                   <div>
-                    <b>{b.bidderName || '—'}</b> → {b.bidValue}
-                    <span className="small"> &nbsp; (Spieler {b.playerId})</span>
-                    <div className="small">{b.createdAt || b.timestamp || ''}</div>
+                    <b>{b.bidderName||'—'}</b> → {b.bidValue}
+                    <div className="small">Spieler {b.playerId} • {b.timestamp}</div>
                   </div>
                   <button className="btn secondary" onClick={()=>withdrawBid(b.id)}>Zurückziehen</button>
                 </div>
@@ -343,6 +331,12 @@ export default function App(){
             </div>
           </div>
         </>
+      ):(
+        <div className="section">
+          <h2>Status</h2>
+          <div className="subtle">Auto-Login mit Passwort „Sieger“. Wenn es nicht klappt, PASSWORD/Deploy prüfen.</div>
+          <textarea readOnly value={debug} style={{width:'100%',height:120,marginTop:8,background:'var(--panel-2)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:8,padding:10}}/>
+        </div>
       )}
     </div>
   );
