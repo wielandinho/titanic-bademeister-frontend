@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import './styles.css';
 
 // Deine Apps-Script Web-App URL:
-const API = 'https://script.google.com/macros/s/AKfycbwNztV3o25lGbDdCX8ziUI6ruJPuY6XcPcfJPHV3qiKMGyjf5q4RkGlOzbxt4xsYGQD/exec';
+const API = 'https://script.google.com/macros/s/AKfycbyNwEn3IYNasZ6DOQZJvOwTFAzEWgyz3cUmtwGv1WHaKYhc97KWctOqvw2t9Q2IiJM/exec';
 const DEFAULT_PW = 'Sieger';
 
 /* ---------- Helpers ---------- */
@@ -85,6 +85,33 @@ function Avatar({ name }){
   );
 }
 
+/* ---------- Countdown Helfer ---------- */
+function nextThursday2300(now = new Date()) {
+  // Nächster Donnerstag 23:00 lokale Zeit
+  const d = new Date(now);
+  const day = d.getDay(); // So=0, Mo=1,... Do=4
+  const target = new Date(d);
+  // Baseline: diese Woche Donnerstag 23:00
+  target.setDate(d.getDate() + ((4 - day + 7) % 7));
+  target.setHours(23, 0, 0, 0);
+  // wenn aktuell bereits nach Zielzeit → +7 Tage
+  if (d.getTime() >= target.getTime()) {
+    target.setDate(target.getDate() + 7);
+  }
+  return target;
+}
+
+function fmtCountdown(ms) {
+  if (ms <= 0) return 'Auktion beendet';
+  const s = Math.floor(ms/1000);
+  const d = Math.floor(s/86400);
+  const h = Math.floor((s%86400)/3600);
+  const m = Math.floor((s%3600)/60);
+  const sec = s%60;
+  const pad = n => String(n).padStart(2,'0');
+  return `${d}d ${pad(h)}:${pad(m)}:${pad(sec)}`;
+}
+
 /* =========================== App =========================== */
 
 export default function App(){
@@ -97,6 +124,13 @@ export default function App(){
   const [debug, setDebug] = useState('');
 
   const [userName, setUserName] = useState(localStorage.getItem('tb_name') || '');
+
+  // --- NEU: Keeper-States
+  const [keepers, setKeepers] = useState([]);
+  const [myKeepers, setMyKeepers] = useState(localStorage.getItem('tb_my_keepers') || '');
+
+  // --- NEU: Countdown
+  const [countdown, setCountdown] = useState('');
 
   function saveName(){
     const n = userName.trim();
@@ -124,6 +158,18 @@ export default function App(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Countdown-Interval
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date();
+      const t = nextThursday2300(now);
+      setCountdown(fmtCountdown(t - now));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
   async function loadState(currentPw = pw){
     const r = await apiCall('getState', { password: currentPw });
     setDebug(d=>d+`\ngetState (status ${r.status ?? 'n/a'}): ${r.raw ?? ''}`);
@@ -131,6 +177,7 @@ export default function App(){
       setPlayers(r.data.players || []);
       setBids(r.data.bids || []);
       setHighest(r.data.highest || {});
+      setKeepers(r.data.keepers || []); // <-- NEU
     } else {
       setMsg('Fehler beim Laden: ' + (r.error || (r.data && r.data.error) || ''));
     }
@@ -166,6 +213,21 @@ export default function App(){
     if (r.ok && r.data && r.data.ok){ await loadState(); } else { setMsg('Fehler resetNow: '+(r.error || (r.data && r.data.error))); }
   }
 
+  // --- NEU: Keeper speichern
+  async function saveKeepers() {
+    const name = (userName || '').trim();
+    if (!name) { setMsg('Bitte oben deinen Namen speichern.'); return; }
+    const text = myKeepers.trim();
+    const r = await apiCall('setKeeper', { password: pw, userName: name, players: text });
+    if (r.ok && r.data && r.data.ok) {
+      localStorage.setItem('tb_my_keepers', text);
+      setMsg('Nicht-verkaufen-Liste gespeichert.'); setTimeout(()=>setMsg(''), 1200);
+      await loadState();
+    } else {
+      setMsg('Fehler setKeeper: ' + (r.error || (r.data && r.data.error)));
+    }
+  }
+
   return (
     <div className="container">
       <div className="header">
@@ -173,7 +235,10 @@ export default function App(){
           <div className="logo" />
           <div>
             <div className="title">Titanic Bademeister</div>
-            <div className="subtle">Gebotsrunde bis Do 23:00 • Reset Fr 15:00</div>
+            {/* NEU: Countdown */}
+            <div className="subtle">
+              Gebotsrunde bis Do 23:00 • Reset Fr 15:00 • <b>Countdown:</b> {countdown}
+            </div>
           </div>
         </div>
         <div className="controls">
@@ -227,6 +292,41 @@ export default function App(){
           </div>
 
           <div className="section">
+            <h2>„Nicht verkaufen“-Listen</h2>
+
+            <div style={{display:'flex', gap:8, alignItems:'flex-start', flexWrap:'wrap', marginBottom:10}}>
+              <div style={{flex:1, minWidth:260}}>
+                <div className="subtle" style={{marginBottom:6}}>
+                  Deine Liste (Kommagetrennt, z. B.: <i>Kane, Musiala, Kimmich</i>)
+                </div>
+                <input
+                  className="input"
+                  value={myKeepers}
+                  onChange={e=>setMyKeepers(e.target.value)}
+                  placeholder="Spieler, Spieler, Spieler"
+                  style={{width:'100%'}}
+                />
+              </div>
+              <button className="btn" onClick={saveKeepers}>Speichern</button>
+            </div>
+
+            <div className="list">
+              {keepers.length === 0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Einträge.</div>}
+              {keepers.map(k => (
+                <div className="row" key={k.id}>
+                  <div>
+                    <b>{k.userName || '—'}</b>
+                    <div className="small" style={{marginTop:2}}>
+                      {k.players || '—'}
+                    </div>
+                  </div>
+                  <div className="small">{k.updatedAt || k.timestamp || ''}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="section">
             <h2>Alle Gebote</h2>
             <div className="list">
               {bids.length === 0 && <div className="subtle" style={{padding:'8px 4px'}}>Noch keine Gebote.</div>}
@@ -235,7 +335,7 @@ export default function App(){
                   <div>
                     <b>{b.bidderName || '—'}</b> → {b.bidValue}
                     <span className="small"> &nbsp; (Spieler {b.playerId})</span>
-                    <div className="small">{b.timestamp}</div>
+                    <div className="small">{b.createdAt || b.timestamp || ''}</div>
                   </div>
                   <button className="btn secondary" onClick={()=>withdrawBid(b.id)}>Zurückziehen</button>
                 </div>
